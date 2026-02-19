@@ -58,6 +58,20 @@ Or using Flask directly:
 flask run
 ```
 
+### Docker
+
+1. (Optional) Create a `.env` file with your configuration:
+   ```
+   PROVIDER=ollama            # or 'deepseek'
+   OLLAMA_BASE_URL=http://host.docker.internal:11434
+   DEEPSEEK_API_KEY=          # required when PROVIDER=deepseek
+   ```
+2. Build and start: `docker compose up -d`
+3. Verify: `curl http://localhost:5000/health`
+4. Stop: `docker compose down`
+
+Generated test files are persisted to `./tests/` via a volume mount.
+
 2. The API will be available at `http://localhost:5000` (default)
 
 3. Generate an EQ test by making a POST request:
