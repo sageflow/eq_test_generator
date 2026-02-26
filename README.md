@@ -1,9 +1,10 @@
 # EQ Test Generator
 
-A Python REST API application that generates ability-based emotional intelligence (EQ) tests for students aged 12-18. The API supports two providers for test generation:
+A Python REST API application that generates ability-based emotional intelligence (EQ) tests for students aged 12-18. The API supports three providers for test generation:
 
 1. **Ollama** - Local DeepSeek model running via Ollama
 2. **DeepSeek Cloud API** - Official DeepSeek Cloud API
+3. **Gemini Cloud API** - Google Gemini Cloud API
 
 The test is generated section-by-section (4 branches) to avoid token limits and follows the Mayer-Salovey-Caruso Emotional Intelligence Test (MSCEIT) model.
 
@@ -24,6 +25,7 @@ The test is generated section-by-section (4 branches) to avoid token limits and 
 - Ollama installed and running locally (if using Ollama provider)
 - deepseek:7b model installed in Ollama (if using Ollama provider)
 - DeepSeek Cloud API key (if using DeepSeek Cloud API provider)
+- Google Gemini API key (if using Gemini Cloud API provider)
 
 ## Installation
 
@@ -44,6 +46,10 @@ pip install -r requirements.txt
 
 3. **For DeepSeek Cloud API provider:**
    - Get your API key from [DeepSeek Platform](https://platform.deepseek.com/)
+   - Add it to your `.env` file (see Configuration section)
+
+4. **For Gemini Cloud API provider:**
+   - Get your API key from [Google AI Studio](https://aistudio.google.com/apikey)
    - Add it to your `.env` file (see Configuration section)
 
 ## Usage
@@ -86,6 +92,11 @@ curl -X POST "http://localhost:5000/generate" \
 curl -X POST "http://localhost:5000/generate" \
      -H "Content-Type: application/json" \
      -d '{"age": 15, "provider": "deepseek"}'
+
+# Using Gemini Cloud API
+curl -X POST "http://localhost:5000/generate" \
+     -H "Content-Type: application/json" \
+     -d '{"age": 15, "provider": "gemini"}'
 ```
 
 ## API Endpoints
@@ -140,7 +151,7 @@ Generate a new EQ test for a student of the specified age. The generation happen
 
 **Parameters:**
 - `age` (integer, required): Student age between 12 and 18
-- `provider` (string, optional): Either `"ollama"` or `"deepseek"`. Defaults to the `PROVIDER` environment variable (default: `"ollama"`)
+- `provider` (string, optional): `"ollama"`, `"deepseek"`, or `"gemini"`. Defaults to the `PROVIDER` environment variable (default: `"ollama"`)
 
 **Response (Success):**
 ```json
@@ -319,8 +330,13 @@ You can configure the application using environment variables. Create a `.env` f
 - `DEEPSEEK_API_KEY`: Your DeepSeek Cloud API key (required if using DeepSeek provider)
 - `DEEPSEEK_CLOUD_MODEL`: DeepSeek Cloud model name (default: `deepseek-chat`)
 
+### Gemini Cloud API Configuration
+- `GEMINI_API_KEY`: Your Google Gemini API key (required if using Gemini provider)
+- `GEMINI_API_URL`: Gemini API base URL (default: `https://generativelanguage.googleapis.com/v1beta/models`)
+- `GEMINI_MODEL`: Gemini model name (default: `gemini-2.0-flash`)
+
 ### General Configuration
-- `PROVIDER`: Default provider - `ollama` or `deepseek` (default: `ollama`)
+- `PROVIDER`: Default provider - `ollama`, `deepseek`, or `gemini` (default: `ollama`)
 - `SECRET_KEY`: Flask secret key
 - `DEBUG`: Enable debug mode (default: `False`)
 - `HOST`: Host to bind to (default: `0.0.0.0`)
@@ -337,7 +353,10 @@ You can configure the application using environment variables. Create a `.env` f
 | `DEEPSEEK_API_URL` | DeepSeek Cloud API URL | `https://api.deepseek.com/v1/chat/completions` | No |
 | `DEEPSEEK_API_KEY` | DeepSeek Cloud API key | - | Yes (if using DeepSeek) |
 | `DEEPSEEK_CLOUD_MODEL` | DeepSeek Cloud model name | `deepseek-chat` | No |
-| `PROVIDER` | Default provider (`ollama` or `deepseek`) | `ollama` | No |
+| `GEMINI_API_KEY` | Google Gemini API key | - | Yes (if using Gemini) |
+| `GEMINI_API_URL` | Gemini API base URL | `https://generativelanguage.googleapis.com/v1beta/models` | No |
+| `GEMINI_MODEL` | Gemini model name | `gemini-2.0-flash` | No |
+| `PROVIDER` | Default provider (`ollama`, `deepseek`, or `gemini`) | `ollama` | No |
 | `SECRET_KEY` | Flask secret key | `your-secret-key-here` | No |
 | `DEBUG` | Enable debug mode | `False` | No |
 | `HOST` | Host to bind to | `0.0.0.0` | No |
@@ -352,6 +371,15 @@ You can configure the application using environment variables. Create a `.env` f
 ```
 DEEPSEEK_API_KEY=your-api-key-here
 PROVIDER=deepseek
+```
+
+### Setting up Gemini Cloud API
+
+1. Get your API key from [Google AI Studio](https://aistudio.google.com/apikey)
+2. Add it to your `.env` file:
+```
+GEMINI_API_KEY=your-api-key-here
+PROVIDER=gemini
 ```
 
 ### Setting up Ollama
