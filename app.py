@@ -151,18 +151,64 @@ class EQTestGenerator:
                         "provider": current_provider
                     })
         
-        # Validate complete test structure before saving
-        is_valid, validation_details = self._validate_test_schema(test_content)
-        if not is_valid:
-            error_message = "Schema validation failed"
-            if validation_details:
-                error_message += f": {'; '.join(validation_details)}"
+        # Validate, save, and mark complete — wrapped to catch any unexpected
+        # exception so status is always updated (never left frozen at "generating").
+        try:
+            is_valid, validation_details = self._validate_test_schema(test_content)
+            if not is_valid:
+                error_message = "Schema validation failed"
+                if validation_details:
+                    error_message += f": {'; '.join(validation_details)}"
+                with storage_lock:
+                    if test_id in tests_storage:
+                        tests_storage[test_id].update({
+                            "status": "failed",
+                            "progress": "validation_failed",
+                            "current_section": "validation",
+                            "error": error_message,
+                            "provider": current_provider
+                        })
+                return {
+                    "success": False,
+                    "test_id": test_id,
+                    "error": error_message,
+                    "provider": current_provider
+                }
+
+            # Save complete test to file
+            filepath = self._save_test_to_file(test_content, age, test_id)
+
+            # Update test record with completion and cleanup old tests
+            with storage_lock:
+                tests_storage[test_id].update({
+                    "status": "completed",
+                    "progress": "completed",
+                    "current_section": "completed",
+                    "file_path": filepath,
+                    "completed_at": datetime.now().isoformat(),
+                    "provider": current_provider
+                })
+                self._cleanup_old_tests()
+
+            return {
+                "success": True,
+                "test_id": test_id,
+                "message": "Test generated successfully",
+                "file_path": filepath,
+                "provider": current_provider
+            }
+
+        except Exception as e:
+            error_message = f"Unexpected error during validation/save: {str(e)}"
+            print(f"[ERROR] test_id={test_id}: {error_message}")
+            import traceback
+            traceback.print_exc()
             with storage_lock:
                 if test_id in tests_storage:
                     tests_storage[test_id].update({
                         "status": "failed",
-                        "progress": "validation_failed",
-                        "current_section": "validation",
+                        "progress": "error",
+                        "current_section": "error",
                         "error": error_message,
                         "provider": current_provider
                     })
@@ -172,31 +218,6 @@ class EQTestGenerator:
                 "error": error_message,
                 "provider": current_provider
             }
-
-        # Save complete test to file
-        filepath = self._save_test_to_file(test_content, age, test_id)
-        
-        # Update test record with completion and cleanup old tests
-        with storage_lock:
-            tests_storage[test_id].update({
-                "status": "completed",
-                "progress": "completed",
-                "current_section": "completed",
-                "file_path": filepath,
-                "completed_at": datetime.now().isoformat(),
-                "provider": current_provider
-            })
-            
-            # Cleanup old tests
-            self._cleanup_old_tests()
-        
-        return {
-            "success": True,
-            "test_id": test_id,
-            "message": "Test generated successfully",
-            "file_path": filepath,
-            "provider": current_provider
-        }
     
     def _call_ollama(self, prompt: str) -> str:
         """Call Ollama API with the given prompt"""
@@ -214,7 +235,7 @@ class EQTestGenerator:
         
         response = self.session.post(url, json=payload, timeout=300)
         response.raise_for_status()
-        
+
         result = response.json()
         
         if 'response' in result:
@@ -395,8 +416,10 @@ class EQTestGenerator:
         if not isinstance(age, int) or not (12 <= age <= 18):
             raise ValueError("Invalid age parameter")
         
-        # Create age-specific directory
-        age_dir = os.path.join('tests', str(age))
+        # Create age-specific directory — use absolute path anchored to this
+        # file's location so it works regardless of the launch working directory.
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        age_dir = os.path.join(base_dir, 'tests', str(age))
         os.makedirs(age_dir, exist_ok=True)
         
         # Generate filename with current date and test_id for uniqueness
