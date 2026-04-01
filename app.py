@@ -20,7 +20,10 @@ DEEPSEEK_MODEL = os.getenv('DEEPSEEK_MODEL', 'deepseek:7b')
 DEEPSEEK_API_URL = os.getenv('DEEPSEEK_API_URL', 'https://api.deepseek.com/v1/chat/completions')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
 DEEPSEEK_CLOUD_MODEL = os.getenv('DEEPSEEK_CLOUD_MODEL', 'deepseek-chat')
-PROVIDER = os.getenv('PROVIDER', 'ollama').lower()  # 'ollama' or 'deepseek'
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+GEMINI_API_URL = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models')
+PROVIDER = os.getenv('PROVIDER', 'ollama').lower()  # 'ollama', 'deepseek', or 'gemini'
 SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 HOST = os.getenv('HOST', '0.0.0.0')
@@ -83,6 +86,8 @@ class EQTestGenerator:
             try:
                 if current_provider == 'deepseek':
                     section_content = self._call_deepseek_cloud(section_prompt)
+                elif current_provider == 'gemini':
+                    section_content = self._call_gemini(section_prompt)
                 else:  # default to ollama
                     section_content = self._call_ollama(section_prompt)
             except Exception as e:
@@ -100,6 +105,31 @@ class EQTestGenerator:
             # Clean up any redacted reasoning if present
             cleaned = re.sub(r'<think>.*?</think>', '', section_content, flags=re.DOTALL)
             cleaned = re.sub(r'<think>.*?</think>', '', cleaned, flags=re.DOTALL)
+            
+            # Strip markdown formatting that some providers add (e.g., Gemini)
+            # so that the validator's regex patterns can match plain text.
+            cleaned = re.sub(r'^#{1,6}\s+', '', cleaned, flags=re.MULTILINE)   # heading markers
+            cleaned = re.sub(r'\*\*(.+?)\*\*', r'\1', cleaned)                 # bold
+            cleaned = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'\1', cleaned)  # italic (single *)
+            cleaned = re.sub(r'__(.+?)__', r'\1', cleaned)                     # underscore bold
+            cleaned = re.sub(r'(?<!_)_(?!_)(.+?)(?<!_)_(?!_)', r'\1', cleaned) # underscore italic
+            cleaned = re.sub(r'^---+\s*$', '', cleaned, flags=re.MULTILINE)    # horizontal rules
+            
+            # Strip section output to content starting from the expected
+            # branch header. Some providers echo example headers from the
+            # prompt, so we take the *last* occurrence of the expected header
+            # to get the actual generated content.
+            expected_headers = {
+                "branch_1": "Branch 1: Perceiving Emotions",
+                "branch_2": "Branch 2: Using Emotions to Facilitate Thought",
+                "branch_3": "Branch 3: Understanding Emotions",
+                "branch_4": "Branch 4: Managing Emotions"
+            }
+            expected_header = expected_headers.get(section_name)
+            if expected_header:
+                last_pos = cleaned.rfind(expected_header)
+                if last_pos >= 0:
+                    cleaned = cleaned[last_pos:]
             
             # Append to test content
             test_content += cleaned + "\n\n"
@@ -121,16 +151,64 @@ class EQTestGenerator:
                         "provider": current_provider
                     })
         
-        # Validate complete test structure before saving
-        is_valid= True
-        if not is_valid:
-            error_message = "Schema validation failed"
+        # Validate, save, and mark complete — wrapped to catch any unexpected
+        # exception so status is always updated (never left frozen at "generating").
+        try:
+            is_valid, validation_details = self._validate_test_schema(test_content)
+            if not is_valid:
+                error_message = "Schema validation failed"
+                if validation_details:
+                    error_message += f": {'; '.join(validation_details)}"
+                with storage_lock:
+                    if test_id in tests_storage:
+                        tests_storage[test_id].update({
+                            "status": "failed",
+                            "progress": "validation_failed",
+                            "current_section": "validation",
+                            "error": error_message,
+                            "provider": current_provider
+                        })
+                return {
+                    "success": False,
+                    "test_id": test_id,
+                    "error": error_message,
+                    "provider": current_provider
+                }
+
+            # Save complete test to file
+            filepath = self._save_test_to_file(test_content, age, test_id)
+
+            # Update test record with completion and cleanup old tests
+            with storage_lock:
+                tests_storage[test_id].update({
+                    "status": "completed",
+                    "progress": "completed",
+                    "current_section": "completed",
+                    "file_path": filepath,
+                    "completed_at": datetime.now().isoformat(),
+                    "provider": current_provider
+                })
+                self._cleanup_old_tests()
+
+            return {
+                "success": True,
+                "test_id": test_id,
+                "message": "Test generated successfully",
+                "file_path": filepath,
+                "provider": current_provider
+            }
+
+        except Exception as e:
+            error_message = f"Unexpected error during validation/save: {str(e)}"
+            print(f"[ERROR] test_id={test_id}: {error_message}")
+            import traceback
+            traceback.print_exc()
             with storage_lock:
                 if test_id in tests_storage:
                     tests_storage[test_id].update({
                         "status": "failed",
-                        "progress": "validation_failed",
-                        "current_section": "validation",
+                        "progress": "error",
+                        "current_section": "error",
                         "error": error_message,
                         "provider": current_provider
                     })
@@ -140,31 +218,6 @@ class EQTestGenerator:
                 "error": error_message,
                 "provider": current_provider
             }
-
-        # Save complete test to file
-        filepath = self._save_test_to_file(test_content, age, test_id)
-        
-        # Update test record with completion and cleanup old tests
-        with storage_lock:
-            tests_storage[test_id].update({
-                "status": "completed",
-                "progress": "completed",
-                "current_section": "completed",
-                "file_path": filepath,
-                "completed_at": datetime.now().isoformat(),
-                "provider": current_provider
-            })
-            
-            # Cleanup old tests
-            self._cleanup_old_tests()
-        
-        return {
-            "success": True,
-            "test_id": test_id,
-            "message": "Test generated successfully",
-            "file_path": filepath,
-            "provider": current_provider
-        }
     
     def _call_ollama(self, prompt: str) -> str:
         """Call Ollama API with the given prompt"""
@@ -182,7 +235,7 @@ class EQTestGenerator:
         
         response = self.session.post(url, json=payload, timeout=300)
         response.raise_for_status()
-        
+
         result = response.json()
         
         if 'response' in result:
@@ -216,6 +269,43 @@ class EQTestGenerator:
             return result['choices'][0]['message']['content']
         else:
             raise Exception("Invalid response format from DeepSeek Cloud API")
+
+    def _call_gemini(self, prompt: str) -> str:
+        """Call Google Gemini Cloud API with the given prompt"""
+        if not GEMINI_API_KEY:
+            raise Exception("GEMINI_API_KEY not configured. Please set it in your environment variables.")
+        
+        url = f"{GEMINI_API_URL}/{GEMINI_MODEL}:generateContent"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        }
+        
+        data = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": TEMPERATURE,
+                "topP": TOP_P
+            }
+        }
+        
+        response = self.session.post(url, headers=headers, json=data, timeout=300)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if 'candidates' in result and len(result['candidates']) > 0:
+            candidate = result['candidates'][0]
+            if 'content' in candidate and 'parts' in candidate['content']:
+                return candidate['content']['parts'][0]['text']
+        
+        raise Exception("Invalid response format from Gemini API")
 
     def _validate_test_schema(self, content: str) -> Tuple[bool, List[str]]:
         """Validate that generated test content follows the expected schema."""
@@ -326,8 +416,10 @@ class EQTestGenerator:
         if not isinstance(age, int) or not (12 <= age <= 18):
             raise ValueError("Invalid age parameter")
         
-        # Create age-specific directory
-        age_dir = os.path.join('tests', str(age))
+        # Create age-specific directory — use absolute path anchored to this
+        # file's location so it works regardless of the launch working directory.
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        age_dir = os.path.join(base_dir, 'tests', str(age))
         os.makedirs(age_dir, exist_ok=True)
         
         # Generate filename with current date and test_id for uniqueness
@@ -429,12 +521,16 @@ def generate_test():
             return create_error_response("Age must be between 12 and 18", 400)
         
         # Validate provider
-        if provider not in ['ollama', 'deepseek']:
-            return create_error_response("Provider must be either 'ollama' or 'deepseek'", 400)
+        if provider not in ['ollama', 'deepseek', 'gemini']:
+            return create_error_response("Provider must be 'ollama', 'deepseek', or 'gemini'", 400)
         
         # Check if DeepSeek API key is required
         if provider == 'deepseek' and not DEEPSEEK_API_KEY:
             return create_error_response("DEEPSEEK_API_KEY not configured. Please set it in your environment variables.", 400)
+        
+        # Check if Gemini API key is required
+        if provider == 'gemini' and not GEMINI_API_KEY:
+            return create_error_response("GEMINI_API_KEY not configured. Please set it in your environment variables.", 400)
         
         # Generate unique test ID
         test_id = str(uuid.uuid4())
